@@ -1,18 +1,20 @@
-use anyhow::Result;
-use std::error::Error;
+use anyhow::{Ok, Result};
+use bytes::Bytes;
+use std::{error::Error, sync::Arc};
 use tokio::{
     self,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use Key_Value_Database::Message;
 use Key_Value_Database::ServerConfig;
+use Key_Value_Database::{CommandRequest, Map};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let server_conf = ServerConfig::load("conf/server.conf")?;
     let addr = server_conf.server.server_address;
     let socket = TcpListener::bind(addr).await?;
+    let db = Arc::new(Map::<String, Bytes>::new());
     println!("Listening... ");
     loop {
         let (mut socket, _) = socket.accept().await?;
@@ -40,4 +42,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         });
     }
+}
+
+async fn process(
+    req: CommandRequest,
+    storage: &Map<String, Bytes>,
+) -> Result<CommandResponse, Box<dyn Error>> {
+    match req {
+        CommandRequest::Get => {}
+        CommandRequest::Set => {}
+        CommandRequest::Publish => {}
+        CommandRequest::Subscribe => {}
+    }
+    Ok(())
 }
