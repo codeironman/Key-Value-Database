@@ -16,14 +16,14 @@ impl Database {
 
 impl Database {
     pub fn get(&mut self, 
-        key : &str)
+        key : String)
         -> Result<Option<Bytes>,Box<dyn Error>> {
         let v = self.db.get(key)?.unwrap();
         Ok(Some(v.into()))
     }
     pub fn set(&mut self,
-        key : &str,
-        value : &Bytes
+        key : String,
+        value : Bytes
         ) -> Result<(),Box<dyn Error>> {
         self.db.put(key, value)?;
         Ok(())

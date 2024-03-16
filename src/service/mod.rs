@@ -1,9 +1,9 @@
 
-use std::{default, error::Error};
+use std::{error::Error, ops::Mul};
 
 use bytes::Bytes;
 
-use crate::storage;
+use crate::{storage, Storage};
 
 use self::message::{cmdrequest::RequestData, CommandRequest, CommandResponce, Get, Set};
 
@@ -11,7 +11,7 @@ pub mod service;
 pub mod message;
 
 pub trait CommandService {
-    fn excute(self ,store : &storage::Storage) -> CommandResponce;
+    fn excute(self ,store : &mut storage::Storage) -> CommandResponce;
 }
 
 
@@ -69,4 +69,44 @@ impl From<Box<dyn Error>> for CommandResponce {
             ..Default::default()
         }
     }
+}
+
+
+pub struct StoreService{
+    store : Storage,
+    on_revc_req : Vec<fn(&CommandRequest)>,
+    on_exec_req : Vec<fn(&CommandResponce)>,
+    on_before_res : Vec<fn(&CommandResponce)>,
+}
+
+impl StoreService {
+    pub fn new(store : Storage) -> Self{
+        Self{
+            store,
+            on_revc_req : Vec::new(),
+            on_exec_req : Vec::new(),
+            on_before_res : Vec::new(),
+        }
+    }
+    pub fn regist_recv_req(mut self,f :fn(&CommandRequest)) -> Self {
+        self.on_revc_req.push(f);
+        self
+    }
+
+    pub fn regist_before_res(mut self,f : fn(&CommandResponce)) -> Self {
+        self.on_exec_req.push(f);
+        self
+    }
+
+    pub async fn notify_recv_req(&self,com_req : &CommandRequest){
+        self.on_revc_req.iter().for_each(|f|f(com_req))
+    } 
+    pub async fn notify_exec_req(&self,cmd_res : &CommandResponce) {
+        self.on_exec_req.iter().for_each(|f|f(cmd_res))
+    }
+
+    pub async fn notify_before_res(&self,cmd_res : &mut CommandResponce) {
+        self.on_before_res.iter().for_each(|f|f(cmd_res))
+    }
+
 }

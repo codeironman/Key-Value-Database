@@ -1,9 +1,6 @@
 use core::f64;
 use std::{
-    error::Error,
-    fmt::{Debug, Display},
-    ptr::null_mut,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+    error::Error, fmt::{Debug, Display}, iter::StepBy, ops::Add, ptr::null_mut, sync::atomic::{AtomicPtr, AtomicUsize, Ordering}
 };
 use bytes::Bytes;
 use rand::Rng;
@@ -148,6 +145,7 @@ impl Map {
         //更新最高层
         self.max_height.fetch_max(level, Ordering::Relaxed);
         Ok(())
+
     }
 
     pub fn get(&mut self, target_key: String) -> Option<&Bytes> {
@@ -205,3 +203,15 @@ fn random_level() -> usize {
     level
 }
 
+// //用于遍历跳表的迭代器结构体
+// struct Iterstate<'a>{
+//     current : Option<&'a Node>
+// }
+
+// impl<'a> Iterator for Iterstate<'a>{
+//     type Item = (&'a String, &'a Bytes);
+//     fn next(&mut self) -> Option<Self::Item> {
+//         let current = self.current?;
+//     }
+    
+// }

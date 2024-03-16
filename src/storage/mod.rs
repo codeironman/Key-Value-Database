@@ -1,32 +1,42 @@
 use bytes::Bytes;
-
 use self::{cache::LRUcache, database::Database, memory::Map};
 
 pub mod database;
 pub mod memory;
 pub mod cache;
-
+ 
 
 pub struct Storage{
-    db : database::Database,
-    mem : memory::Map,
-    cache : cache::LRUcache,
+    level1_cache : cache::LRUcache,
+    level2_memory : memory::Map,
+    level3_database : database::Database,
 }
 
 impl Storage 
 {
-    pub fn new() -> Self{
+    pub fn new(path : String) -> Self{
         Storage{
-            db : Database::new(path),
-            mem : Map::new(),
-            cache : LRUcache::new(size),
-            
+            level1_cache : LRUcache::new(16),    
+            level2_memory : Map::new(),
+            level3_database : Database::new(path),
         }
     }
-    pub fn set(&mut self, key : String, value : Bytes){
+    pub fn set(&mut self, key : String, value : Bytes) -> Result<Option<Bytes>,Box<dyn std::error::Error>>{
+        self.level1_cache.set(key.clone(), value.clone());  
+        self.level2_memory.set(key.clone(), value.clone())?;
+        self.level3_database.set(key.clone(), value.clone())?;
+        return Ok(Some(value));
 
     }
-    pub fn get(&mut self, key : String) {
-
+    pub fn get(&mut self, key : String) -> Result<Option<Bytes>,Box<dyn std::error::Error>>{
+        if let Some(value) = self.level1_cache.get(key.clone()){
+            Ok(Some(value))
+        }
+        else if  let Some(value) = self.level2_memory.get(key.clone()){
+            Ok(Some(value.clone()))
+        }
+        else {
+            Ok(None)
+        }
     }
 }

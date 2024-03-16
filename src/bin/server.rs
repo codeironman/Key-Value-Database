@@ -1,18 +1,19 @@
 use anyhow::{Ok, Result};
 use bytes::Bytes;
-use std::{error::Error, sync::Arc};
+use tracing::{error, info};
+use std::{error::Error, future::Future, sync::Arc};
 use tokio::{
     self,
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::TcpListener, sync::{broadcast, mpsc},
 };
-use Key_Value_Database::ServerConfig;
-use Key_Value_Database::{CommandRequest, Map};
-
+use Key_Value_Database::{ServerConfig, StoreService};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let server_conf = ServerConfig::load("conf/server.conf")?;
+    let db_path = server_conf.rocksdb_path.path;
     let addr = server_conf.server.server_address;
+    let mex_conns = server_conf.connects.max_connect;
     let socket = TcpListener::bind(addr).await?;
     let db = Arc::new(Map::<String, Bytes>::new());
     println!("Listening... ");
@@ -55,4 +56,38 @@ async fn process(
         CommandRequest::Subscribe => {}
     }
     Ok(())
+}
+
+pub struct Server {
+    listen_address : String,
+    service : StoreService,
+}
+
+impl Server {
+    pub fn new(addr : String, server : StoreService) -> Self {
+        Self{
+            listen_address : addr,
+            service : server,
+        }
+    }
+    pub async fn run(&self,shutdown : impl Future) -> Result<(),Box<dyn Error>> {
+        let (notify_shutdown,_) = broadcast::channel(1);
+        let (shutdown_complete_tx , mut shutdown_complete_rx) = mpsc::channel::<()>(1);
+        tokio::select! {
+            res = self.excute(&notify_shutdown,&shutdown_complete_tx) => {
+                if let Err(e) = res {
+                    error!(cause = %e,"failed to accept");
+                }
+            }
+        }
+        Ok(())
+    }
+    pub async fn excute(&self,notify_shutdown: &broadcast::Sender<()>,shutdown_complete_tx: &mpsc::Sender<()>) -> Result<(),Box<dyn Error>> {
+        let socket = TcpListener::bind(&self.listen_address).await?;
+        info!("Listening on {} ......",self.listen_address);
+        loop {
+            
+        }
+        Ok(())
+    }
 }
