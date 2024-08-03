@@ -1,4 +1,4 @@
-use std::{future::Future, process::Output, sync::Arc};
+use std::{future::Future, sync::Arc};
 
 use crate::{
     cmd::{cmd_request::ReqData, CmdRequest, CmdResponse},

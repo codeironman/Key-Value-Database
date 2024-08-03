@@ -1,4 +1,4 @@
-use std::{error::Error, fs};
+use std::fs;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -8,8 +8,8 @@ use crate::compaction::tiered::CompactOptions;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub server: ListenAddress,
-    pub database_path: String,
-    pub connects: Connect,
+    pub database_path: DataBasePath,
+    pub connects: Connects,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,8 +48,8 @@ pub struct DataBasePath {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Connect {
-    pub max_connect: usize,
+pub struct Connects {
+    pub max_connects: usize,
 }
 
 pub struct DBConfig {

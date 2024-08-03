@@ -4,10 +4,7 @@ use anyhow::Result;
 use bytes::{BufMut, Bytes};
 use farmhash::fingerprint32;
 
-use crate::{
-    block::{block::Block, builder::BlockBuilder},
-    cache::BlockCache,
-};
+use crate::{block::builder::BlockBuilder, cache::BlockCache};
 
 use super::{
     bloom::Bloom,
@@ -84,7 +81,7 @@ impl SsTableBuilder {
         bloom.encode(&mut buf);
         buf.put_u32(bloom_offset as u32);
         let mut file = File::create(path)?;
-        file.write_all(&buf);
+        file.write_all(&buf)?;
         file.sync_all()?;
         Ok(SsTable {
             id,
@@ -95,7 +92,7 @@ impl SsTableBuilder {
             block_offset: meta_offset,
             block_cache,
             bloom,
-            max_ts: 0, // will be changed to latest ts in week 2
+            max_ts: 0, 
         })
     }
 }

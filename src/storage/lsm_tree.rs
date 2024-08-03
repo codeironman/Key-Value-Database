@@ -11,7 +11,7 @@ use farmhash::fingerprint32;
 use tokio::{
     fs::remove_file,
     sync::{
-        mpsc::{self, Sender, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
         Mutex, MutexGuard, RwLock,
     },
     task::JoinHandle,
@@ -63,6 +63,12 @@ pub struct DBState {
     pub levels: Vec<(usize, Vec<usize>)>,
     pub sstables: HashMap<usize, Arc<SsTable>>,
 }
+impl Drop for ArcDB {
+    fn drop(&mut self) {
+        self.compaction_notifier.send(()).ok();
+        self.flush_notifier.send(()).ok();
+    }
+}
 
 impl ArcDB {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
@@ -103,14 +109,15 @@ impl DBState {
 impl DBInner {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let state = DBState::new(path)?;
+        if !path.exists() {
+            create_dir_all(path)?
+        }
+        let wal_path = path.join(format!("{:05}.wal", 0));
+        let state = DBState::new(wal_path)?;
         let next_sst_id = 1;
         let block_cache = Arc::new(BlockCache::new(1 << 10)); //1MB
         let compaction_controller = CompactionController::new(CompactOptions::default());
-        if path.exists() {
-            create_dir_all(path)?
-        }
-        let manifest_path = path.join("MANIFEST");
+        let manifest_path = path.join("manifests");
         let manifest = Manifest::create(manifest_path)?;
         manifest.add_record(ManifestRecord::NewMemtable(state.memtable.id()))?;
 
@@ -134,7 +141,7 @@ impl DBInner {
             Arc::clone(&guard)
         };
         // memtable
-        if let Some(value) = snapshot.memtable.get(&key) {
+        if let Some(value) = snapshot.memtable.get(key) {
             if value.is_empty() {
                 return Ok(None);
             }
@@ -142,7 +149,7 @@ impl DBInner {
         }
         // immtables
         for memtable in snapshot.imm_memtables.iter() {
-            if let Some(value) = memtable.get(&key) {
+            if let Some(value) = memtable.get(key) {
                 if value.is_empty() {
                     return Ok(None);
                 }
@@ -194,23 +201,21 @@ impl DBInner {
     }
 
     pub async fn put(&self, key: &Bytes, value: &Bytes) -> Result<()> {
-        let mut size = 0;
-        {
+        let size = {
             let guard = self.state.read().await;
             guard.memtable.put(key, value)?;
-            size = guard.memtable.size();
-        }
+            guard.memtable.size()
+        };
         self.try_freeze(size).await?;
         Ok(())
     }
 
     pub async fn delete(&self, key: &Bytes) -> Result<()> {
-        let mut size = 0;
-        {
+        let size = {
             let guard = self.state.read().await;
             guard.memtable.put(key, &Bytes::from_static(&[0u8]))?;
-            size = guard.memtable.size();
-        }
+            guard.memtable.size()
+        };
         self.try_freeze(size).await?;
         Ok(())
     }

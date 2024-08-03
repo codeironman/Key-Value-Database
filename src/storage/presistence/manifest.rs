@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use bytes::{Buf, BufMut};
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::compaction::tiered::CompactionTask;

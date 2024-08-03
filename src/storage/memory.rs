@@ -26,7 +26,7 @@ impl Node {
             forward: (0..level).map(|_| AtomicPtr::new(null_mut())).collect(),
         }
     }
-    pub fn node(level: usize, k: Bytes, v: Bytes) -> Self {
+    pub fn node_with_value(level: usize, k: Bytes, v: Bytes) -> Self {
         Node {
             key: Some(k),
             value: Some(v),
@@ -42,6 +42,12 @@ pub struct Map {
 
 unsafe impl Send for Map {}
 unsafe impl Sync for Map {}
+
+impl Default for Map {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Map {
     pub fn new() -> Self {
@@ -60,7 +66,7 @@ impl Map {
     pub fn delete(&mut self, target_key: Bytes) -> Result<(), Box<dyn Error>> {
         let mut node = self.head.load(Ordering::Acquire);
         let level = self.max_height.load(Ordering::Acquire);
-        let mut remove_pos = vec![node; MAX_LEVEL];
+        let mut remove_pos = [node; MAX_LEVEL];
         for i in (0..level).rev() {
             unsafe {
                 while let Some(next) = (*node).forward[i].load(Ordering::Acquire).as_ref() {
@@ -105,19 +111,21 @@ impl Map {
     }
     pub fn put(&self, target_key: Bytes, target_value: Bytes) -> Result<(), Box<dyn Error>> {
         let mut index = self.head.load(Ordering::Acquire);
-        let mut insert_pos = vec![self.head.load(Ordering::Acquire); MAX_LEVEL];
+        let mut insert_pos = [self.head.load(Ordering::Acquire); MAX_LEVEL];
         for i in (0..self.max_height.load(Ordering::Acquire)).rev() {
             unsafe {
                 while let Some(next) = (*index).forward[i].load(Ordering::Relaxed).as_ref() {
                     if let Some(key) = &next.key {
-                        if &target_key > key {
-                            index = (*index).forward[i].load(Ordering::Acquire);
-                        } else if &target_key == key {
-                            let node = &mut *(*index).forward[i].load(Ordering::Acquire);
-                            node.value = Some(target_value);
-                            return Ok(());
-                        } else {
-                            break;
+                        match target_key.cmp(key) {
+                            std::cmp::Ordering::Equal => {
+                                let node = &mut *(*index).forward[i].load(Ordering::Acquire);
+                                node.value = Some(target_value);
+                                return Ok(());
+                            }
+                            std::cmp::Ordering::Greater => {
+                                index = (*index).forward[i].load(Ordering::Acquire);
+                            }
+                            std::cmp::Ordering::Less => break,
                         }
                     } else {
                         break;
@@ -127,7 +135,11 @@ impl Map {
             }
         }
         let level = random_level();
-        let new_node = Box::into_raw(Box::new(Node::node(level, target_key, target_value)));
+        let new_node = Box::into_raw(Box::new(Node::node_with_value(
+            level,
+            target_key,
+            target_value,
+        )));
         //插入每层的结点
         for i in 0..level {
             unsafe {
@@ -155,12 +167,14 @@ impl Map {
             unsafe {
                 while let Some(next) = (*node).forward[i].load(Ordering::Acquire).as_ref() {
                     if let Some(ref key) = next.key {
-                        if target_key > key {
-                            node = (*node).forward[i].load(Ordering::Acquire);
-                        } else if target_key == key {
-                            return next.value.clone();
-                        } else {
-                            break;
+                        match target_key.cmp(key) {
+                            std::cmp::Ordering::Equal => {
+                                return next.value.clone();
+                            }
+                            std::cmp::Ordering::Greater => {
+                                node = (*node).forward[i].load(Ordering::Acquire);
+                            }
+                            std::cmp::Ordering::Less => break,
                         }
                     }
                 }
@@ -191,8 +205,8 @@ impl Display for Map {
                     (*self.head.load(Ordering::Relaxed)).forward[i].load(Ordering::Acquire);
                 while let Some(node) = index.as_ref() {
                     if let (Some(key), Some(value)) = (&node.key, &node.value) {
-                        let value = std::str::from_utf8(&value).unwrap();
-                        let key = std::str::from_utf8(&key).unwrap();
+                        let value = std::str::from_utf8(value).unwrap();
+                        let key = std::str::from_utf8(key).unwrap();
                         write!(f, "({key},{value}) -> ")?;
                     }
                     index = node.forward[i].load(Ordering::Acquire);

@@ -39,12 +39,12 @@ impl Wal {
         let mut hasher = crc32fast::Hasher::new();
         hasher.write_u16(key.len() as u16);
         buf.put_u16(key.len() as u16);
-        hasher.write(&key);
-        buf.put_slice(&key);
+        hasher.write(key);
+        buf.put_slice(key);
         hasher.write_u16(value.len() as u16);
         buf.put_u16(value.len() as u16);
-        hasher.write(&value);
-        buf.put_slice(&value);
+        hasher.write(value);
+        buf.put_slice(value);
         buf.put_u32(hasher.finalize());
         file.write_all(&buf)?;
         Ok(())

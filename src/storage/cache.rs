@@ -40,6 +40,7 @@ impl<K, V> LinkedList<K, V> {
             tail: None,
         }
     }
+    #[allow(dead_code)]
     pub fn push_back(&mut self, key: K, value: V) -> Link<K, V> {
         let new_node = Arc::new(Mutex::new(Node::new(key, value)));
         if let Some(ref old_tail) = self.tail {
@@ -49,7 +50,7 @@ impl<K, V> LinkedList<K, V> {
             self.head = Some(new_node.clone());
         }
         self.tail = Some(new_node.clone());
-        return new_node;
+        new_node
     }
 
     pub fn push_front(&mut self, key: K, value: V) -> Link<K, V> {
@@ -61,7 +62,7 @@ impl<K, V> LinkedList<K, V> {
             self.tail = Some(new_node.clone());
         }
         self.head = Some(new_node.clone());
-        return new_node;
+        new_node
     }
     pub fn pop_back(&mut self) -> Option<Link<K, V>> {
         if let Some(tail) = self.tail.take() {
@@ -75,22 +76,22 @@ impl<K, V> LinkedList<K, V> {
             }
             Some(tail.clone())
         } else {
-            return None;
+            None
         }
     }
     pub fn remove(&mut self, index: Link<K, V>) {
         let node = index.lock().unwrap();
         if let Some(ref pre_node) = node.prev {
             let mut pre_node = pre_node.lock().unwrap();
-            pre_node.next = node.next.clone();
+            pre_node.next.clone_from(&node.next);
         } else {
-            self.head = node.next.clone();
+            self.head.clone_from(&node.next);
         }
         if let Some(ref next_node) = node.next {
             let mut next_node = next_node.lock().unwrap();
-            next_node.prev = node.prev.clone();
+            next_node.prev.clone_from(&node.prev);
         } else {
-            self.tail = node.prev.clone();
+            self.tail.clone_from(&node.prev);
         }
     }
 }

@@ -1,5 +1,6 @@
-use std::{error::Error, sync::Arc};
+use std::sync::Arc;
 
+use anyhow::Result;
 use futures::{Future, SinkExt, StreamExt};
 use prost::Message;
 use tokio::{
@@ -28,7 +29,7 @@ impl Server {
 
     // 监听 SIGINT 信号
     #[instrument(name = "server_run", skip_all)]
-    pub async fn run(&self, shutdown: impl Future) -> Result<(), Box<dyn Error>> {
+    pub async fn run(&self, shutdown: impl Future) -> Result<()> {
         // 广播channel，用于给各子线程发送关闭信息
         let (notify_shutdown, _) = broadcast::channel(1);
         // mpsc channel，用于通知主线程，各子线程执行完成。
@@ -60,7 +61,7 @@ impl Server {
         &self,
         notify_shutdown: &broadcast::Sender<()>,
         shutdown_complete_tx: &mpsc::Sender<()>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<()> {
         let listener = TcpListener::bind(&self.listen_addr).await?;
         info!("Listening on {} ......", self.listen_addr);
 
@@ -89,7 +90,7 @@ impl Server {
                             // 清理工作
                             info!("Process resource release before shutdown ......");
                             // 通知主线程处理完成
-                            let _ = shutdown_complete.send(());
+                            let _ = shutdown_complete.send(()).await;
                             info!("Process resource release completed ......");
                             return;
                         }

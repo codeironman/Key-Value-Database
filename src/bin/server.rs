@@ -1,8 +1,6 @@
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use key_value_database::{
-    cmd::CmdRequest, lsm_tree::ArcDB, DataBasePath, ServerConfig, Service, Store,
-};
+use key_value_database::{cmd::CmdRequest, lsm_tree::ArcDB, ServerConfig, Service};
 use prost::Message;
 use tokio::net::TcpListener;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -11,10 +9,9 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-
-    let server_conf = ServerConfig::load("conf/server.conf")?;
+    let server_conf = ServerConfig::load("config/server.conf")?;
     let listen_addr = server_conf.server.server_address;
-    let path = server_conf.database_path;
+    let path = server_conf.database_path.path;
     let listener = TcpListener::bind(&listen_addr).await?;
     info!("Listening on {} ......", listen_addr);
 

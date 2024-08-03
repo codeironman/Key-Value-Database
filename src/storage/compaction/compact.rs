@@ -138,6 +138,6 @@ impl DBInner {
                 }
             }
         });
-        return Ok(Some(handle));
+        Ok(Some(handle))
     }
 }
