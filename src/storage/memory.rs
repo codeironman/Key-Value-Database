@@ -1,15 +1,19 @@
-use core::f64;
-use std::{
-    error::Error, fmt::{Debug, Display}, iter::StepBy, ops::Add, ptr::null_mut, sync::atomic::{AtomicPtr, AtomicUsize, Ordering}
-};
 use bytes::Bytes;
+use core::f64;
 use rand::Rng;
+use std::{
+    error::Error,
+    fmt::{Debug, Display},
+    marker::PhantomData,
+    ptr::null_mut,
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+};
 
 const P: f64 = 0.5; //控制升入上一层的概率
 const MAX_LEVEL: usize = 16;
 #[derive(Debug)]
 struct Node {
-    key: Option<String>,
+    key: Option<Bytes>,
     value: Option<Bytes>,
     forward: Vec<AtomicPtr<Node>>, //代表每一层的下一个值
 }
@@ -22,7 +26,7 @@ impl Node {
             forward: (0..level).map(|_| AtomicPtr::new(null_mut())).collect(),
         }
     }
-    pub fn node(level: usize, k: String, v: Bytes) -> Self {
+    pub fn node(level: usize, k: Bytes, v: Bytes) -> Self {
         Node {
             key: Some(k),
             value: Some(v),
@@ -31,13 +35,13 @@ impl Node {
     }
 }
 
-pub struct Map
-where
-    String: Ord,
-{
+pub struct Map {
     head: AtomicPtr<Node>, //做为哨兵结点，方便插入和删除
     max_height: AtomicUsize,
 }
+
+unsafe impl Send for Map {}
+unsafe impl Sync for Map {}
 
 impl Map {
     pub fn new() -> Self {
@@ -53,9 +57,7 @@ impl Map {
         }
     }
 
-    
-
-    pub fn delete(&mut self, target_key: String) -> Result<(), Box<dyn Error>> {
+    pub fn delete(&mut self, target_key: Bytes) -> Result<(), Box<dyn Error>> {
         let mut node = self.head.load(Ordering::Acquire);
         let level = self.max_height.load(Ordering::Acquire);
         let mut remove_pos = vec![node; MAX_LEVEL];
@@ -97,12 +99,11 @@ impl Map {
                 self.max_height.fetch_sub(1, Ordering::AcqRel);
             }
             let delete_node = Box::from_raw(node);
-            // drop(delete_node);
+            drop(delete_node);
         }
         Ok(())
     }
-    pub fn set(&mut self, target_key: String, target_value: Bytes ) -> Result<(), Box<dyn Error>>
-    {
+    pub fn put(&self, target_key: Bytes, target_value: Bytes) -> Result<(), Box<dyn Error>> {
         let mut index = self.head.load(Ordering::Acquire);
         let mut insert_pos = vec![self.head.load(Ordering::Acquire); MAX_LEVEL];
         for i in (0..self.max_height.load(Ordering::Acquire)).rev() {
@@ -145,20 +146,19 @@ impl Map {
         //更新最高层
         self.max_height.fetch_max(level, Ordering::Relaxed);
         Ok(())
-
     }
 
-    pub fn get(&mut self, target_key: String) -> Option<&Bytes> {
+    pub fn get(&self, target_key: &Bytes) -> Option<Bytes> {
         let mut node = self.head.load(Ordering::Acquire);
         let level = self.max_height.load(Ordering::Relaxed);
         for i in (0..level).rev() {
             unsafe {
                 while let Some(next) = (*node).forward[i].load(Ordering::Acquire).as_ref() {
                     if let Some(ref key) = next.key {
-                        if target_key > *key {
+                        if target_key > key {
                             node = (*node).forward[i].load(Ordering::Acquire);
-                        } else if target_key == *key {
-                            return next.value.as_ref();
+                        } else if target_key == key {
+                            return next.value.clone();
                         } else {
                             break;
                         }
@@ -167,6 +167,16 @@ impl Map {
             }
         }
         None
+    }
+
+    pub fn iter(&self) -> MapIter {
+        unsafe {
+            let start = (*self.head.load(Ordering::Acquire)).forward[0].load(Ordering::Acquire);
+            MapIter {
+                cur: start,
+                _marker: PhantomData,
+            }
+        }
     }
 }
 impl Display for Map {
@@ -182,6 +192,7 @@ impl Display for Map {
                 while let Some(node) = index.as_ref() {
                     if let (Some(key), Some(value)) = (&node.key, &node.value) {
                         let value = std::str::from_utf8(&value).unwrap();
+                        let key = std::str::from_utf8(&key).unwrap();
                         write!(f, "({key},{value}) -> ")?;
                     }
                     index = node.forward[i].load(Ordering::Acquire);
@@ -192,7 +203,6 @@ impl Display for Map {
         }
         Ok(())
     }
-    
 }
 fn random_level() -> usize {
     let mut level = 1;
@@ -203,15 +213,24 @@ fn random_level() -> usize {
     level
 }
 
-// //用于遍历跳表的迭代器结构体
-// struct Iterstate<'a>{
-//     current : Option<&'a Node>
-// }
+pub struct MapIter<'a> {
+    cur: *const Node,
+    _marker: PhantomData<&'a Node>,
+}
 
-// impl<'a> Iterator for Iterstate<'a>{
-//     type Item = (&'a String, &'a Bytes);
-//     fn next(&mut self) -> Option<Self::Item> {
-//         let current = self.current?;
-//     }
-    
-// }
+impl<'a> Iterator for MapIter<'a> {
+    type Item = (Bytes, Bytes);
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe {
+            if let Some(node) = self.cur.as_ref() {
+                let key = node.key.clone();
+                let value = node.value.clone();
+                self.cur = node.forward[0].load(Ordering::Acquire);
+                if let (Some(key), Some(value)) = (key, value) {
+                    return Some((key, value));
+                }
+            }
+            None
+        }
+    }
+}

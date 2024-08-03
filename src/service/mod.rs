@@ -1,112 +1,55 @@
+use std::{future::Future, process::Output, sync::Arc};
 
-use std::{error::Error, ops::Mul};
+use crate::{
+    cmd::{cmd_request::ReqData, CmdRequest, CmdResponse},
+    lsm_tree::ArcDB,
+};
+mod cmd_service;
 
-use bytes::Bytes;
-
-use crate::{storage, Storage};
-
-use self::message::{cmdrequest::RequestData, CommandRequest, CommandResponce, Get, Set};
-
-pub mod service;
-pub mod message;
-
-pub trait CommandService {
-    fn excute(self ,store : &mut storage::Storage) -> CommandResponce;
+pub type Store = ArcDB;
+pub trait CmdService {
+    fn excute(self, store: &Store) -> impl Future<Output = CmdResponse> + Send;
 }
 
-
-impl CommandRequest {
-    pub fn get(key : impl Into<String>) -> Self {
-        Self{
-            request : Some(RequestData::Get(Get{key : key.into()})),
-        }
-    }
-    pub fn set(key : impl Into<String>,value : Bytes) -> Self {
-        Self{
-            request : Some(RequestData::Set(Set{
-                key : key.into(),
-                value : value,
-            }))
-        }
-    }
+pub struct Service {
+    store_service: Arc<StoreService>,
 }
 
-impl CommandResponce {
-    pub fn new (status : usize, message : String, value : Bytes) -> Self {
-        Self{
-            status, 
-            message,
-            value,
+pub struct StoreService {
+    store: Store,
+}
+impl Service {
+    pub fn new(store: Store) -> Self {
+        Self {
+            store_service: Arc::new(StoreService { store }),
         }
+    }
+
+    // 执行命令
+    pub async fn execute(&self, cmd_req: CmdRequest) -> CmdResponse {
+        println!("=== Execute Command Before ===");
+        let cmd_res = process_cmd(cmd_req, &self.store_service.store).await;
+        println!("=== Execute Command After ===");
+        cmd_res
     }
 }
 
-impl From<Bytes> for CommandResponce {
-    fn from(value: Bytes) -> Self {
-        Self{
-            status : 200usize,
-            message : "success".to_string(),
-            value : value
+// 实现Clone trait
+impl Clone for Service {
+    fn clone(&self) -> Self {
+        Self {
+            store_service: self.store_service.clone(),
         }
     }
 }
 
-impl From<&str> for CommandResponce {
-    fn from(value: &str) -> Self {
-        Self{
-            status : 400usize,
-            message : value.to_string(),
-            ..Default::default()
-        }
+// 处理请求命令，返回Response
+async fn process_cmd(cmd_req: CmdRequest, store: &Store) -> CmdResponse {
+    match cmd_req.req_data {
+        // 处理 GET 命令
+        Some(ReqData::Get(cmd_get)) => cmd_get.excute(store).await,
+        // 处理 SET 命令
+        Some(ReqData::Set(cmd_set)) => cmd_set.excute(store).await,
+        _ => "Invalid command".into(),
     }
-}
-
-impl From<Box<dyn Error>> for CommandResponce {
-    fn from(e: Box<dyn Error>) -> Self {
-        Self{
-            status : 500usize,
-            message : e.to_string(),
-            ..Default::default()
-        }
-    }
-}
-
-
-pub struct StoreService{
-    store : Storage,
-    on_revc_req : Vec<fn(&CommandRequest)>,
-    on_exec_req : Vec<fn(&CommandResponce)>,
-    on_before_res : Vec<fn(&CommandResponce)>,
-}
-
-impl StoreService {
-    pub fn new(store : Storage) -> Self{
-        Self{
-            store,
-            on_revc_req : Vec::new(),
-            on_exec_req : Vec::new(),
-            on_before_res : Vec::new(),
-        }
-    }
-    pub fn regist_recv_req(mut self,f :fn(&CommandRequest)) -> Self {
-        self.on_revc_req.push(f);
-        self
-    }
-
-    pub fn regist_before_res(mut self,f : fn(&CommandResponce)) -> Self {
-        self.on_exec_req.push(f);
-        self
-    }
-
-    pub async fn notify_recv_req(&self,com_req : &CommandRequest){
-        self.on_revc_req.iter().for_each(|f|f(com_req))
-    } 
-    pub async fn notify_exec_req(&self,cmd_res : &CommandResponce) {
-        self.on_exec_req.iter().for_each(|f|f(cmd_res))
-    }
-
-    pub async fn notify_before_res(&self,cmd_res : &mut CommandResponce) {
-        self.on_before_res.iter().for_each(|f|f(cmd_res))
-    }
-
 }

@@ -1,39 +1,46 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{
+    hash::Hash,
+    sync::{Arc, Mutex},
+};
 
-use bytes::Bytes;
+use dashmap::DashMap;
 
-type Link = Arc<Mutex<Node>>;
+use super::block::block::Block;
 
-struct  Node {
-    key : String,
-    value : Bytes,
-    prev : Option<Link>,
-    next : Option<Link>,
+pub type BlockCache = Cache<(usize, usize), Arc<Block>>;
+
+type Link<K, V> = Arc<Mutex<Node<K, V>>>;
+
+struct Node<K, V> {
+    key: K,
+    value: V,
+    prev: Option<Link<K, V>>,
+    next: Option<Link<K, V>>,
 }
-impl Node {
-   pub fn new(key : String, value : Bytes) -> Self{
-        Self{
-            key : key,
-            value : value,
-            prev : None,
-            next : None,
+impl<K, V> Node<K, V> {
+    pub fn new(key: K, value: V) -> Self {
+        Self {
+            key,
+            value,
+            prev: None,
+            next: None,
         }
-   } 
+    }
 }
 
-struct Linkedlist {
-    head : Option<Link>,
-    tail : Option<Link>,
+struct LinkedList<K, V> {
+    head: Option<Link<K, V>>,
+    tail: Option<Link<K, V>>,
 }
 
-impl Linkedlist {
-    pub fn new() -> Self{
-        Self{
-            head : None,
-            tail : None
+impl<K, V> LinkedList<K, V> {
+    pub fn new() -> Self {
+        Self {
+            head: None,
+            tail: None,
         }
-    }    
-    pub fn push_back(&mut self, key: String, value: Bytes) -> Link{
+    }
+    pub fn push_back(&mut self, key: K, value: V) -> Link<K, V> {
         let new_node = Arc::new(Mutex::new(Node::new(key, value)));
         if let Some(ref old_tail) = self.tail {
             old_tail.lock().unwrap().next = Some(new_node.clone());
@@ -44,95 +51,91 @@ impl Linkedlist {
         self.tail = Some(new_node.clone());
         return new_node;
     }
-    
-    
-    pub fn push_front(&mut self,key : String , value: Bytes) -> Link{
+
+    pub fn push_front(&mut self, key: K, value: V) -> Link<K, V> {
         let new_node = Arc::new(Mutex::new(Node::new(key, value)));
         if let Some(ref old_head) = self.head {
             old_head.lock().unwrap().prev = Some(new_node.clone());
             new_node.lock().unwrap().next = Some(old_head.clone());
-        }else {
+        } else {
             self.tail = Some(new_node.clone());
         }
         self.head = Some(new_node.clone());
         return new_node;
     }
-    pub fn pop_back(&mut self) -> Option<Link>{
+    pub fn pop_back(&mut self) -> Option<Link<K, V>> {
         if let Some(tail) = self.tail.take() {
-           let mut tail_node = tail.lock().unwrap();
-           if let Some(pre) = tail_node.prev.take() {
-              let mut pre_node = pre.lock().unwrap();
-              pre_node.next = None;
-              self.tail = Some(pre.clone());
-           }
-           else {
-              self.head = None;
-           }
-           Some(tail.clone())
+            let mut tail_node = tail.lock().unwrap();
+            if let Some(pre) = tail_node.prev.take() {
+                let mut pre_node = pre.lock().unwrap();
+                pre_node.next = None;
+                self.tail = Some(pre.clone());
+            } else {
+                self.head = None;
+            }
+            Some(tail.clone())
+        } else {
+            return None;
         }
-        else {
-           return None;
-        }
-      }
-    pub fn remove(&mut self,index : Link){
-      let node = index.lock().unwrap();
+    }
+    pub fn remove(&mut self, index: Link<K, V>) {
+        let node = index.lock().unwrap();
         if let Some(ref pre_node) = node.prev {
-         let mut pre_node = pre_node.lock().unwrap();
-         pre_node.next = node.next.clone();
-        }
-        else{
+            let mut pre_node = pre_node.lock().unwrap();
+            pre_node.next = node.next.clone();
+        } else {
             self.head = node.next.clone();
         }
         if let Some(ref next_node) = node.next {
             let mut next_node = next_node.lock().unwrap();
             next_node.prev = node.prev.clone();
-        }
-        else {
+        } else {
             self.tail = node.prev.clone();
         }
     }
-
 }
 
-pub struct LRUcache {
-    pub capacity : usize,
-    hash : Mutex<HashMap<String,Link>>,
-    list : Linkedlist //内部保证的线程安全，不需要额外加锁
+pub struct Cache<K, V> {
+    pub capacity: usize,
+    hash: DashMap<K, Link<K, V>>,
+    list: LinkedList<K, V>,
 }
 
-impl LRUcache {
-    pub fn new(size : usize) -> Self{
-        LRUcache{
-            capacity : size,
-            hash : Mutex::new(HashMap::new()),
-            list : Linkedlist::new(),
+impl<K, V> Cache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    pub fn new(size: usize) -> Self {
+        Cache {
+            capacity: size,
+            hash: DashMap::new(),
+            list: LinkedList::new(),
         }
     }
-    pub fn set(&mut self, key : String, value : Bytes) {
-        let mut hash = self.hash.lock().unwrap();
-        if let Some(index) = hash.get(&key) {
+    pub fn set(&mut self, key: K, value: V) {
+        if let Some(index) = self.hash.get(&key) {
             self.list.remove(index.clone());
         }
-        if hash.len() == self.capacity {
-            if let Some(node) = self.list.pop_back(){
+        if self.hash.len() == self.capacity {
+            if let Some(node) = self.list.pop_back() {
                 let key = node.lock().unwrap().key.clone();
-                hash.remove(&key);
+                self.hash.remove(&key);
             }
         }
         let iter = self.list.push_front(key.clone(), value);
-        hash.insert(key, iter);
+        self.hash.insert(key, iter);
     }
 
-    pub fn get(&mut self, key : String) -> Option<Bytes> {
-        let mut hash = self.hash.lock().unwrap();
-        if let Some(index) = hash.get(&key) {
+    pub fn get(&mut self, key: K) -> Option<V> {
+        if let Some(index) = self.hash.get(&key) {
             let value = {
                 let node = index.lock().unwrap();
                 node.value.clone()
             };
             self.list.remove(index.clone());
             let iter = self.list.push_front(key.clone(), value.clone());
-            hash.insert(key, iter);
+            self.hash.insert(key, iter);
             Some(value)
         } else {
             None
