@@ -4,7 +4,7 @@ use anyhow::Result;
 use bytes::{BufMut, Bytes};
 use farmhash::fingerprint32;
 
-use crate::{block::builder::BlockBuilder, cache::BlockCache};
+use crate::{block::builder::BlockBuilder, cache::BlockCache, mvcc::key::Key};
 
 use super::{
     bloom::Bloom,
@@ -17,8 +17,9 @@ pub struct SsTableBuilder {
     meta: Vec<BlockMeta>,
     block_size: usize,
     key_hashes: Vec<u32>,
-    first_key: Bytes,
-    last_key: Bytes,
+    first_key: Key<Bytes>,
+    last_key: Key<Bytes>,
+    max_ts: u64,
 }
 
 impl SsTableBuilder {
@@ -26,11 +27,12 @@ impl SsTableBuilder {
         Self {
             data: Vec::new(),
             meta: Vec::new(),
-            first_key: Bytes::new(),
-            last_key: Bytes::new(),
+            first_key: Key::<Bytes>::new(&Bytes::new(), 0),
+            last_key: Key::<Bytes>::new(&Bytes::new(), 0),
             block_size,
             builder: BlockBuilder::new(block_size),
             key_hashes: Vec::new(),
+            max_ts: 0,
         }
     }
 
@@ -51,14 +53,18 @@ impl SsTableBuilder {
         self.data.put_u32(checksum);
     }
 
-    pub fn add(&mut self, key: Bytes, value: Bytes) {
-        self.key_hashes.push(fingerprint32(&key));
-
+    pub fn add(&mut self, key: Key<Bytes>, value: Bytes) {
+        self.key_hashes.push(fingerprint32(&key.data()));
+        if key.ts() > self.max_ts {
+            self.max_ts = key.ts();
+        }
         if self.builder.add_pair(key.clone(), value.clone()) {
             return;
         }
         self.push_block();
-        self.builder.add_pair(key, value);
+        self.builder.add_pair(key.clone(), value);
+        self.first_key = key.clone();
+        self.last_key = key.clone();
     }
 
     pub fn build(
@@ -70,7 +76,7 @@ impl SsTableBuilder {
         self.push_block();
         let mut buf = self.data;
         let meta_offset = buf.len();
-        let meta_buf = BlockMeta::encode_block_meta(&self.meta);
+        let meta_buf = BlockMeta::encode_block_meta(&self.meta, self.max_ts);
         buf.extend(meta_buf);
         buf.put_u32(meta_offset as u32);
         let bloom = Bloom::build_from_key_hashes(
@@ -92,7 +98,7 @@ impl SsTableBuilder {
             block_offset: meta_offset,
             block_cache,
             bloom,
-            max_ts: 0, 
+            max_ts: 0,
         })
     }
 }

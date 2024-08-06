@@ -1,11 +1,13 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
+use bytes::Bytes;
 use tokio::{sync::mpsc::UnboundedReceiver, task::JoinHandle, time};
 
 use crate::{
     iterators::{iterators::StorageIterator, merge_iterator::MergeIterator},
     lsm_tree::DBInner,
+    mvcc::key::Key,
     presistence::manifest::ManifestRecord,
     table::{builder::SsTableBuilder, table::SsTable},
 };
@@ -15,7 +17,7 @@ use super::{iterator::SstConcatIterator, tiered::CompactionTask};
 impl DBInner {
     fn compact_generate_sst_from_iter(
         &self,
-        mut iter: impl StorageIterator,
+        mut iter: impl StorageIterator<KeyType = Key<Bytes>>,
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut builder = None;
         let mut new_sst = Vec::new();

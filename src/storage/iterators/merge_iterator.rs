@@ -3,6 +3,10 @@ use std::{
     collections::{binary_heap::PeekMut, BinaryHeap},
 };
 
+use bytes::Bytes;
+
+use crate::mvcc::key::Key;
+
 use super::iterators::StorageIterator;
 
 struct HeapWrapper<I: StorageIterator>(pub usize, pub Box<I>);
@@ -73,7 +77,8 @@ impl<I: StorageIterator> MergeIterator<I> {
     }
 }
 
-impl<I: 'static + StorageIterator> StorageIterator for MergeIterator<I> {
+impl<I: 'static + StorageIterator<KeyType = Key<Bytes>>> StorageIterator for MergeIterator<I> {
+    type KeyType = Key<Bytes>;
     fn is_valid(&self) -> bool {
         self.current
             .as_ref()
@@ -81,7 +86,7 @@ impl<I: 'static + StorageIterator> StorageIterator for MergeIterator<I> {
             .unwrap_or(false)
     }
 
-    fn key(&self) -> bytes::Bytes {
+    fn key(&self) -> Key<Bytes> {
         self.current.as_ref().unwrap().1.key()
     }
 

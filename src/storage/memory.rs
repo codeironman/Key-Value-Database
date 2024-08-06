@@ -1,19 +1,22 @@
+use anyhow::Result;
 use bytes::Bytes;
 use core::f64;
 use rand::Rng;
 use std::{
-    error::Error,
     fmt::{Debug, Display},
     marker::PhantomData,
+    ops::Bound,
     ptr::null_mut,
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
+
+use crate::mvcc::key::Key;
 
 const P: f64 = 0.5; //控制升入上一层的概率
 const MAX_LEVEL: usize = 16;
 #[derive(Debug)]
 struct Node {
-    key: Option<Bytes>,
+    key: Option<Key<Bytes>>,
     value: Option<Bytes>,
     forward: Vec<AtomicPtr<Node>>, //代表每一层的下一个值
 }
@@ -26,7 +29,7 @@ impl Node {
             forward: (0..level).map(|_| AtomicPtr::new(null_mut())).collect(),
         }
     }
-    pub fn node_with_value(level: usize, k: Bytes, v: Bytes) -> Self {
+    pub fn node_with_value(level: usize, k: Key<Bytes>, v: Bytes) -> Self {
         Node {
             key: Some(k),
             value: Some(v),
@@ -63,7 +66,7 @@ impl Map {
         }
     }
 
-    pub fn delete(&mut self, target_key: Bytes) -> Result<(), Box<dyn Error>> {
+    pub fn delete(&mut self, target_key: Key<Bytes>) -> Result<()> {
         let mut node = self.head.load(Ordering::Acquire);
         let level = self.max_height.load(Ordering::Acquire);
         let mut remove_pos = [node; MAX_LEVEL];
@@ -85,10 +88,12 @@ impl Map {
         }
         unsafe {
             node = (*remove_pos[0]).forward[0].load(Ordering::Acquire);
-            for i in 0..self.max_height.load(Ordering::Acquire) {
-                if node.is_null() {
-                    break;
-                } else if (*node).key.as_ref().unwrap() != &target_key {
+            for (i, _) in remove_pos
+                .iter()
+                .enumerate()
+                .take(self.max_height.load(Ordering::Acquire))
+            {
+                if node.is_null() || (*node).key.as_ref().unwrap() != &target_key {
                     break;
                 }
                 (*remove_pos[i]).forward[i].store(
@@ -109,7 +114,7 @@ impl Map {
         }
         Ok(())
     }
-    pub fn put(&self, target_key: Bytes, target_value: Bytes) -> Result<(), Box<dyn Error>> {
+    pub fn put(&self, target_key: Key<Bytes>, target_value: Bytes) -> Result<()> {
         let mut index = self.head.load(Ordering::Acquire);
         let mut insert_pos = [self.head.load(Ordering::Acquire); MAX_LEVEL];
         for i in (0..self.max_height.load(Ordering::Acquire)).rev() {
@@ -141,7 +146,7 @@ impl Map {
             target_value,
         )));
         //插入每层的结点
-        for i in 0..level {
+        for (i, _) in insert_pos.iter().enumerate().take(level) {
             unsafe {
                 loop {
                     let next_node = (*insert_pos[i]).forward[i].load(Ordering::Acquire);
@@ -160,7 +165,7 @@ impl Map {
         Ok(())
     }
 
-    pub fn get(&self, target_key: &Bytes) -> Option<Bytes> {
+    pub fn get(&self, target_key: &Key<Bytes>) -> Option<Bytes> {
         let mut node = self.head.load(Ordering::Acquire);
         let level = self.max_height.load(Ordering::Relaxed);
         for i in (0..level).rev() {
@@ -192,6 +197,65 @@ impl Map {
             }
         }
     }
+
+    pub fn range_iter(&self, lower: Bound<Key<Bytes>>, upper: Bound<Key<Bytes>>) -> MapRangeIter {
+        let mut cur = self.head.load(Ordering::Acquire);
+
+        unsafe {
+            // Find the starting position based on the lower bound
+            if let Bound::Included(ref lower_bound) | Bound::Excluded(ref lower_bound) = lower {
+                for i in (0..self.max_height.load(Ordering::Relaxed)).rev() {
+                    while let Some(next) = (*cur).forward[i].load(Ordering::Acquire).as_ref() {
+                        if let Some(ref key) = next.key {
+                            if key < lower_bound
+                                || (key == lower_bound && matches!(lower, Bound::Excluded(_)))
+                            {
+                                cur = (*cur).forward[i].load(Ordering::Acquire);
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Move to the first node greater than or equal to the lower bound
+            cur = (*cur).forward[0].load(Ordering::Acquire);
+
+            // Find the ending position based on the upper bound
+            let end = if let Bound::Included(ref upper_bound) | Bound::Excluded(ref upper_bound) =
+                upper
+            {
+                let mut end_node = self.head.load(Ordering::Acquire);
+                for i in (0..self.max_height.load(Ordering::Relaxed)).rev() {
+                    while let Some(next) = (*end_node).forward[i].load(Ordering::Acquire).as_ref() {
+                        if let Some(ref key) = next.key {
+                            if key < upper_bound
+                                || (key == upper_bound && matches!(upper, Bound::Included(_)))
+                            {
+                                end_node = (*end_node).forward[i].load(Ordering::Acquire);
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                end_node
+            } else {
+                std::ptr::null()
+            };
+
+            MapRangeIter {
+                cur,
+                end,
+                _marker: PhantomData,
+            }
+        }
+    }
 }
 impl Display for Map {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -206,7 +270,7 @@ impl Display for Map {
                 while let Some(node) = index.as_ref() {
                     if let (Some(key), Some(value)) = (&node.key, &node.value) {
                         let value = std::str::from_utf8(value).unwrap();
-                        let key = std::str::from_utf8(key).unwrap();
+                        let key = std::str::from_utf8(key.0.as_ref()).unwrap();
                         write!(f, "({key},{value}) -> ")?;
                     }
                     index = node.forward[i].load(Ordering::Acquire);
@@ -233,7 +297,7 @@ pub struct MapIter<'a> {
 }
 
 impl<'a> Iterator for MapIter<'a> {
-    type Item = (Bytes, Bytes);
+    type Item = (Key<Bytes>, Bytes);
     fn next(&mut self) -> Option<Self::Item> {
         unsafe {
             if let Some(node) = self.cur.as_ref() {
@@ -244,6 +308,36 @@ impl<'a> Iterator for MapIter<'a> {
                     return Some((key, value));
                 }
             }
+            None
+        }
+    }
+}
+
+pub struct MapRangeIter<'a> {
+    cur: *const Node,
+    end: *const Node,
+    _marker: PhantomData<&'a Node>,
+}
+
+impl<'a> Iterator for MapRangeIter<'a> {
+    type Item = (Key<Bytes>, Bytes);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe {
+            if self.cur.is_null() || self.cur == self.end {
+                return None;
+            }
+
+            if let Some(node) = self.cur.as_ref() {
+                let key = node.key.clone();
+                let value = node.value.clone();
+                self.cur = node.forward[0].load(Ordering::Acquire);
+
+                if let (Some(key), Some(value)) = (key, value) {
+                    return Some((key, value));
+                }
+            }
+
             None
         }
     }

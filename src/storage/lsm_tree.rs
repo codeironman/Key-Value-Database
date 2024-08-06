@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{create_dir_all, File},
+    ops::Bound,
     path::{Path, PathBuf},
     sync::{atomic::AtomicUsize, Arc},
 };
@@ -23,9 +24,14 @@ use crate::{
     cache::BlockCache,
     compaction::iterator::SstConcatIterator,
     iterators::{
-        iterators::StorageIterator, merge_iterator::MergeIterator, two_merge::TwoMergeIterator,
+        iterators::StorageIterator, lsm_iterator::LsmIterator, merge_iterator::MergeIterator,
+        two_merge::TwoMergeIterator,
     },
     memtable::MemTable,
+    mvcc::{
+        key::{self, Key},
+        mvcc::MvccInner,
+    },
     table::{iterator::SsTableIterator, table::SsTable},
     DBConfig,
 };
@@ -53,6 +59,7 @@ pub struct DBInner {
     pub config: Arc<DBConfig>,
     pub(crate) compaction_controller: CompactionController,
     pub(crate) manifest: Manifest,
+    pub(crate) mvcc: MvccInner,
 }
 
 #[derive(Clone)]
@@ -62,6 +69,11 @@ pub struct DBState {
     pub l0_sstables_index: Vec<usize>,
     pub levels: Vec<(usize, Vec<usize>)>,
     pub sstables: HashMap<usize, Arc<SsTable>>,
+}
+
+pub enum WriteBatchRecord<T: AsRef<[u8]>> {
+    Put(T, T),
+    Del(T),
 }
 impl Drop for ArcDB {
     fn drop(&mut self) {
@@ -130,18 +142,143 @@ impl DBInner {
             compaction_controller,
             manifest,
             config: Arc::new(DBConfig::default()),
+            mvcc: MvccInner::new(0),
         };
 
         Ok(storage)
     }
+    pub async fn write_batch(&self, batch: &[WriteBatchRecord<Bytes>]) -> Result<u64> {
+        let _lock = self.mvcc.write_lock.lock();
+        let ts = self.mvcc.latest_commit_ts().await + 1;
+        for record in batch {
+            *match record {
+                WriteBatchRecord::Del(key) => Box::new(self.batch_delete(key, ts).await?),
 
-    pub async fn get(&self, key: &Bytes) -> Result<Option<Bytes>> {
+                WriteBatchRecord::Put(key, value) => {
+                    Box::new(self.batch_put(key, value, ts).await?)
+                }
+            }
+        }
+        self.mvcc.update_commit_ts(ts).await;
+        Ok(ts)
+    }
+    pub async fn get(self: &Arc<Self>, key: &Bytes) -> Result<Option<Bytes>> {
+        let txn = self
+            .mvcc
+            .new_txn(self.clone(), self.config.serializable)
+            .await;
+        txn.get(key).await
+    }
+
+    pub async fn put(self: &Arc<Self>, key: &Bytes, value: &Bytes) -> Result<()> {
+        if !self.config.serializable {
+            self.write_batch(&[WriteBatchRecord::Put(key.clone(), value.clone())])
+                .await?;
+        } else {
+            let txn = self
+                .mvcc
+                .new_txn(self.clone(), self.config.serializable)
+                .await;
+            txn.put(key, value).await;
+            txn.commit().await?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete(self: &Arc<Self>, key: &Bytes) -> Result<()> {
+        if !self.config.serializable {
+            self.write_batch(&[WriteBatchRecord::Del(key.clone())])
+                .await?;
+        } else {
+            let txn = self
+                .mvcc
+                .new_txn(self.clone(), self.config.serializable)
+                .await;
+            txn.delete(key).await;
+            txn.commit().await?;
+        }
+        Ok(())
+    }
+    pub async fn get_with_ts(&self, key: &Bytes, read_ts: u64) -> Result<Option<Bytes>> {
+        let snapshot = {
+            let guard = self.state.read().await;
+            Arc::clone(&guard)
+        };
+
+        let mut memtable_iters = Vec::with_capacity(snapshot.imm_memtables.len() + 1);
+        memtable_iters.push(Box::new(snapshot.memtable.scan(
+            Bound::Included(Key::<Bytes>::new(key, key::TS_RANGE_BEGIN)),
+            Bound::Included(Key::<Bytes>::new(key, key::TS_RANGE_END)),
+        )));
+        for memtable in snapshot.imm_memtables.iter() {
+            memtable_iters.push(Box::new(memtable.scan(
+                Bound::Included(Key::<Bytes>::new(key, key::TS_RANGE_BEGIN)),
+                Bound::Included(Key::<Bytes>::new(key, key::TS_RANGE_END)),
+            )));
+        }
+        let memtable_iter = MergeIterator::new(memtable_iters);
+
+        let mut l0_iters = Vec::with_capacity(snapshot.l0_sstables_index.len());
+
+        fn key_within(user_key: Bytes, table_begin: &Key<Bytes>, table_end: &Key<Bytes>) -> bool {
+            table_begin.data() <= user_key && user_key <= table_end.data()
+        }
+        let keep_table = |key: &Bytes, table: &SsTable| {
+            if key_within(key.clone(), &table.first_key, &table.last_key)
+                && table.bloom.may_contain(farmhash::fingerprint32(key))
+            {
+                return true;
+            }
+            false
+        };
+
+        for table in snapshot.l0_sstables_index.iter() {
+            let table = snapshot.sstables[table].clone();
+            if keep_table(key, &table) {
+                l0_iters.push(Box::new(SsTableIterator::new(
+                    table,
+                    Some(Key::<Bytes>::new(key, key::TS_RANGE_BEGIN)),
+                )?));
+            }
+        }
+        let l0_iter = MergeIterator::new(l0_iters);
+        let mut level_iters = Vec::with_capacity(snapshot.levels.len());
+        for (_, level_sst_ids) in &snapshot.levels {
+            let mut level_ssts = Vec::with_capacity(level_sst_ids.len());
+            for table in level_sst_ids {
+                let table = snapshot.sstables[table].clone();
+                if keep_table(key, &table) {
+                    level_ssts.push(table);
+                }
+            }
+            let level_iter = SstConcatIterator::new(
+                level_ssts,
+                Some(Key::<Bytes>::new(key, key::TS_RANGE_BEGIN)),
+            )?;
+            level_iters.push(Box::new(level_iter));
+        }
+
+        let iter = LsmIterator::new(
+            TwoMergeIterator::new(
+                TwoMergeIterator::new(memtable_iter, l0_iter)?,
+                MergeIterator::new(level_iters),
+            )?,
+            Bound::Unbounded,
+            read_ts,
+        )?;
+
+        if iter.is_valid() && iter.key() == key && !iter.value().is_empty() {
+            return Ok(Some(iter.value()));
+        }
+        Ok(None)
+    }
+    pub async fn get_without_ts(&self, key: &Bytes) -> Result<Option<Bytes>> {
         let snapshot = {
             let guard = self.state.read().await;
             Arc::clone(&guard)
         };
         // memtable
-        if let Some(value) = snapshot.memtable.get(key) {
+        if let Some(value) = snapshot.memtable.get(&Key::<Bytes>::init(key)) {
             if value.is_empty() {
                 return Ok(None);
             }
@@ -149,7 +286,7 @@ impl DBInner {
         }
         // immtables
         for memtable in snapshot.imm_memtables.iter() {
-            if let Some(value) = memtable.get(key) {
+            if let Some(value) = memtable.get(&Key::<Bytes>::init(key)) {
                 if value.is_empty() {
                     return Ok(None);
                 }
@@ -164,8 +301,12 @@ impl DBInner {
         }
 
         let may_in_table = |key: Bytes, table: &SsTable| {
-            if key_within(key.clone(), table.first_key.clone(), table.last_key.clone()) {
-                if table.bloom.may_contain(fingerprint32(key.as_ref())) {
+            if key_within(
+                key.clone(),
+                table.first_key.clone().data(),
+                table.last_key.clone().data(),
+            ) {
+                if table.bloom.may_contain(fingerprint32(&key)) {
                     return true;
                 }
                 return false;
@@ -176,7 +317,10 @@ impl DBInner {
         for table in snapshot.l0_sstables_index.iter() {
             let table = snapshot.sstables[table].clone();
             if may_in_table(key.clone(), &table) {
-                l0_iters.push(Box::new(SsTableIterator::new(table, Some(key.clone()))?))
+                l0_iters.push(Box::new(SsTableIterator::new(
+                    table,
+                    Some(Key::<Bytes>::init(key)),
+                )?))
             }
         }
         let l0_iter = MergeIterator::new(l0_iters);
@@ -189,31 +333,33 @@ impl DBInner {
                     level_ssts.push(table);
                 }
             }
-            let level_iter = SstConcatIterator::new(level_ssts, Some(key.clone()))?;
+            let level_iter = SstConcatIterator::new(level_ssts, Some(Key::<Bytes>::init(key)))?;
             level_iters.push(Box::new(level_iter));
         }
         let level_iter = MergeIterator::new(level_iters);
-        let iter = TwoMergeIterator::create(level_iter, l0_iter)?;
-        if iter.is_valid() && iter.key() == key && !iter.value().is_empty() {
+        let iter = TwoMergeIterator::new(level_iter, l0_iter)?;
+        if iter.is_valid() && iter.key().data() == key && !iter.value().is_empty() {
             return Ok(Some(iter.value()));
         }
         Ok(None)
     }
 
-    pub async fn put(&self, key: &Bytes, value: &Bytes) -> Result<()> {
+    pub async fn batch_put(&self, key: &Bytes, value: &Bytes, ts: u64) -> Result<()> {
         let size = {
             let guard = self.state.read().await;
-            guard.memtable.put(key, value)?;
+            guard.memtable.put(Key::<Bytes>::new(key, ts), value)?;
             guard.memtable.size()
         };
         self.try_freeze(size).await?;
         Ok(())
     }
 
-    pub async fn delete(&self, key: &Bytes) -> Result<()> {
+    pub async fn batch_delete(&self, key: &Bytes, ts: u64) -> Result<()> {
         let size = {
             let guard = self.state.read().await;
-            guard.memtable.put(key, &Bytes::from_static(&[0u8]))?;
+            guard
+                .memtable
+                .put(Key::<Bytes>::new(key, ts), &Bytes::from_static(&[0u8]))?;
             guard.memtable.size()
         };
         self.try_freeze(size).await?;

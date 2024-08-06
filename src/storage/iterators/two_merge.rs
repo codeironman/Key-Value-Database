@@ -1,6 +1,8 @@
 use anyhow::Result;
 use bytes::Bytes;
 
+use crate::mvcc::key::Key;
+
 use super::iterators::StorageIterator;
 /// Merges two iterators of different types into one. If the two iterators have the same key, only
 /// produce the key once and prefer the entry from A.
@@ -10,7 +12,12 @@ pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     choose_a: bool,
 }
 
-impl<A: 'static + StorageIterator, B: 'static + for<'a> StorageIterator> TwoMergeIterator<A, B> {
+impl<
+        'a,
+        A: 'a + StorageIterator<KeyType = Key<Bytes>>,
+        B: 'a + for<'b> StorageIterator<KeyType = Key<Bytes>>,
+    > TwoMergeIterator<A, B>
+{
     fn choose_a(a: &A, b: &B) -> bool {
         if !a.is_valid() {
             return false;
@@ -28,7 +35,7 @@ impl<A: 'static + StorageIterator, B: 'static + for<'a> StorageIterator> TwoMerg
         Ok(())
     }
 
-    pub fn create(a: A, b: B) -> Result<Self> {
+    pub fn new(a: A, b: B) -> Result<Self> {
         let mut iter = Self {
             choose_a: false,
             a,
@@ -40,10 +47,13 @@ impl<A: 'static + StorageIterator, B: 'static + for<'a> StorageIterator> TwoMerg
     }
 }
 
-impl<A: 'static + StorageIterator, B: 'static + for<'a> StorageIterator> StorageIterator
-    for TwoMergeIterator<A, B>
+impl<
+        A: 'static + StorageIterator<KeyType = Key<Bytes>>,
+        B: 'static + for<'a> StorageIterator<KeyType = Key<Bytes>>,
+    > StorageIterator for TwoMergeIterator<A, B>
 {
-    fn key(&self) -> Bytes {
+    type KeyType = Key<Bytes>;
+    fn key(&self) -> Key<Bytes> {
         if self.choose_a {
             self.a.key()
         } else {

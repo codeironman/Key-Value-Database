@@ -3,7 +3,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::Bytes;
 
-use crate::{block::iterator::BlockIterator, iterators::iterators::StorageIterator};
+use crate::{
+    block::iterator::BlockIterator, iterators::iterators::StorageIterator, mvcc::key::Key,
+};
 
 use super::table::SsTable;
 
@@ -13,7 +15,7 @@ pub struct SsTableIterator {
     block_index: usize,
 }
 impl SsTableIterator {
-    pub fn new(table: Arc<SsTable>, key: Option<Bytes>) -> Result<Self> {
+    pub fn new(table: Arc<SsTable>, key: Option<Key<Bytes>>) -> Result<Self> {
         let (block_index, block_iter) = match key {
             Some(k) => Self::seek_to_key_inner(&table, k)?,
             None => Self::seek_to_first_inner(&table)?,
@@ -31,7 +33,7 @@ impl SsTableIterator {
         Ok((0, block_iter))
     }
 
-    fn seek_to_key_inner(table: &Arc<SsTable>, key: Bytes) -> Result<(usize, BlockIterator)> {
+    fn seek_to_key_inner(table: &Arc<SsTable>, key: Key<Bytes>) -> Result<(usize, BlockIterator)> {
         let block_index = table.find_block_index(key.clone());
         let block = table.read_block(block_index)?;
         let mut block_iter = BlockIterator::new(block);
@@ -42,11 +44,13 @@ impl SsTableIterator {
 }
 
 impl StorageIterator for SsTableIterator {
+    type KeyType = Key<Bytes>;
+
     fn is_valid(&self) -> bool {
         self.block_iter.is_vaild()
     }
 
-    fn key(&self) -> Bytes {
+    fn key(&self) -> Key<Bytes> {
         self.block_iter.key()
     }
     fn next(&mut self) -> Result<()> {

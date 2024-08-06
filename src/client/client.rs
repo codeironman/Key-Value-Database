@@ -22,7 +22,8 @@ impl Client {
 
         let client_args = ClientArgs::parse();
         let cmd = process_args(client_args).await?;
-        cmd.encode(&mut buf).unwrap();
+        cmd.encode(&mut
+             buf).unwrap();
         stream.send(buf.freeze()).await.unwrap();
         info!("Send command successed！");
 

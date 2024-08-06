@@ -1,10 +1,12 @@
 use bytes::{Buf, Bytes};
 use std::{cmp::Ordering, sync::Arc};
 
+use crate::mvcc::key::Key;
+
 use super::block::{Block, U16SIZE};
 pub struct BlockIterator {
     block: Arc<Block>,
-    key: Bytes,
+    key: Key<Bytes>,
     index: usize,
     value_range: (usize, usize),
 }
@@ -14,12 +16,12 @@ impl BlockIterator {
         Self {
             block,
             index: 0,
-            key: Bytes::new(),
+            key: Key::<Bytes>::new(&Bytes::new(), 0),
             value_range: (0, 0),
         }
     }
 
-    pub fn key(&self) -> Bytes {
+    pub fn key(&self) -> Key<Bytes> {
         self.key.clone()
     }
 
@@ -28,16 +30,17 @@ impl BlockIterator {
     }
 
     pub fn is_vaild(&self) -> bool {
-        !self.key.is_empty()
+        !self.key.data().is_empty()
     }
 
     fn seek_to_offset(&mut self, offset: usize) {
         let mut entry = &self.block.data[offset..];
         let key_len = entry.get_u16() as usize;
         let key = &entry[..key_len];
-        self.key.clear();
-        self.key = Bytes::copy_from_slice(key);
         entry.advance(key_len);
+        let ts = entry.get_u64();
+        self.key.data().clear();
+        self.key = Key::<Bytes>::new(&Bytes::copy_from_slice(key), ts);
         let value_len = entry.get_u16() as usize;
         let value_offset_begin = offset + U16SIZE + U16SIZE + key_len + U16SIZE;
         let value_offset_end = value_offset_begin + value_len;
@@ -47,7 +50,7 @@ impl BlockIterator {
 
     pub fn seek_to(&mut self, index: usize) {
         if index > self.block.offsets.len() {
-            self.key.clear();
+            self.key.data().clear();
             self.value_range = (0, 0);
             return;
         }
@@ -56,7 +59,7 @@ impl BlockIterator {
         self.index = index
     }
 
-    pub fn seek_to_key(&mut self, key: Bytes) {
+    pub fn seek_to_key(&mut self, key: Key<Bytes>) {
         let mut low = 0;
         let mut high = self.block.offsets.len();
 
@@ -74,7 +77,7 @@ impl BlockIterator {
 }
 
 impl Iterator for BlockIterator {
-    type Item = Bytes;
+    type Item = Key<Bytes>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.index > self.block.offsets.len() {
             return None;

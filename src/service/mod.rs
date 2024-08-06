@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::{
     cmd::{cmd_request::ReqData, CmdRequest, CmdResponse},
@@ -8,7 +8,7 @@ mod cmd_service;
 
 pub type Store = ArcDB;
 pub trait CmdService {
-    fn excute(self, store: &Store) -> impl Future<Output = CmdResponse> + Send;
+    fn excute(self, store: &Store) -> Pin<Box<dyn Future<Output = CmdResponse> + Send + '_>>;
 }
 
 pub struct Service {

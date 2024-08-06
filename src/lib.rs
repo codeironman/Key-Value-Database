@@ -9,5 +9,7 @@ pub use arg::*;
 mod protobuf;
 pub use protobuf::*;
 pub mod client;
+mod mvcc;
+pub use mvcc::*;
 pub mod raft;
 pub mod server;

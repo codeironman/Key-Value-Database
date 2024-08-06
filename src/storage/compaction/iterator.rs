@@ -5,6 +5,7 @@ use bytes::Bytes;
 
 use crate::{
     iterators::iterators::StorageIterator,
+    mvcc::key::Key,
     table::{iterator::SsTableIterator, table::SsTable},
 };
 
@@ -17,7 +18,7 @@ pub struct SstConcatIterator {
 }
 
 impl SstConcatIterator {
-    pub fn new(sstables: Vec<Arc<SsTable>>, key: Option<Bytes>) -> Result<Self> {
+    pub fn new(sstables: Vec<Arc<SsTable>>, key: Option<Key<Bytes>>) -> Result<Self> {
         if sstables.is_empty() {
             return Ok(Self {
                 current: None,
@@ -26,17 +27,17 @@ impl SstConcatIterator {
             });
         }
 
-        let start_index = match &key {
-            Some(key) => sstables
-                .partition_point(|table| table.first_key <= key)
+        let start_index = match key {
+            Some(ref key) => sstables
+                .partition_point(|table| table.first_key <= *key)
                 .saturating_sub(1)
                 .min(sstables.len() - 1),
             None => 0,
         };
 
         let mut iter = Self {
-            current: match &key {
-                Some(key) => Some(SsTableIterator::new(
+            current: match key {
+                Some(ref key) => Some(SsTableIterator::new(
                     sstables[start_index].clone(),
                     Some(key.clone()),
                 )?),
@@ -70,10 +71,11 @@ impl SstConcatIterator {
 }
 
 impl StorageIterator for SstConcatIterator {
+    type KeyType = Key<Bytes>;
     fn is_valid(&self) -> bool {
         self.current.is_some()
     }
-    fn key(&self) -> Bytes {
+    fn key(&self) -> Key<Bytes> {
         self.current.as_ref().unwrap().key()
     }
 
